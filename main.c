@@ -100,8 +100,7 @@ void read_petra(PetraDriver *petra);
 
 
 void switch_roller1(PetraDriver *petra);
-void switch_roller2(PetraDriver *petra);
-void switch_sucker(PetraDriver *petra);
+void switch_roller2(PetraDriver *petra);void switch_sucker(PetraDriver *petra);
 void switch_arm(PetraDriver *petra);
 void switch_diver(PetraDriver *petra);
 void switch_hook(PetraDriver *petra);
@@ -135,13 +134,15 @@ int main(int argc, char const *argv[])
 {
 	pthread_mutex_init(&petra_mutex, NULL);
 
-	petraWriteSocketServer = create_server("127.0.0.1", 50000, &addr_in_w);
+	int port = 50000;
+
+	petraWriteSocketServer = create_server("192.168.1.11", port, &addr_in_w);
 	if(petraWriteSocketServer == -1)
 	{
 		exit(EXIT_FAILURE);
 	}
 
-	petraReadSocketServer = create_server("127.0.0.1", 50001, &addr_in_r);
+	petraReadSocketServer = create_server("192.168.1.11", port+1, &addr_in_r);
 	if(petraReadSocketServer == -1)
 	{
 		close(petraWriteSocketServer);
@@ -356,10 +357,12 @@ int open_petra(PetraDriver *petra, const char *driver_in, const char *driver_out
 {
 	if((petra->in = open(driver_in, O_RDONLY)) == -1)
 	{
+		logerr("driver in not exists");
 		return -1;
 	}
 	if((petra->out = open(driver_out, O_WRONLY)) == -1)
 	{
+		logerr("driver out not exists");
 		close(petra->in);
 		return -2;
 	}
