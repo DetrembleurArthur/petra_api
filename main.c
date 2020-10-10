@@ -118,31 +118,40 @@ void petra_hanler(void);
 void *sensors_watcher_handler(void *);
 
 
-int create_server(const char *ip, short port, struct sockaddr_in *addr_in);
+int create_server(const char *ip, unsigned short port, struct sockaddr_in *addr_in);
 int accept_client(int socketServer, struct sockaddr_in *addr_in);
+
+void interrupt_main(int sig);
 
 pthread_mutex_t petra_mutex;
 struct sockaddr_in addr_in_w;
-int petraWriteSocketServer;
-int petraWriteSocketClient;
+int petraWriteSocketServer = -1;
+int petraWriteSocketClient = -1;
 struct sockaddr_in addr_in_r;
-int petraReadSocketServer;
-int petraReadSocketClient;
+int petraReadSocketServer = -1;
+int petraReadSocketClient = -1;
 PetraDriver petra;
+pthread_t sensors_watcher_thread;
 
 int main(int argc, char const *argv[])
 {
+	const unsigned short PORT = 50000;
+	const char *IP = "127.0.0.1";
+
+	struct sigaction interrupt = {0};
+	interrupt.sa_handler = interrupt_main;
+	sigaction(SIGINT, &interrupt, NULL);
+
 	pthread_mutex_init(&petra_mutex, NULL);
 
-	int port = 50000;
 
-	petraWriteSocketServer = create_server("192.168.1.11", port, &addr_in_w);
+	petraWriteSocketServer = create_server(IP, PORT, &addr_in_w);
 	if(petraWriteSocketServer == -1)
 	{
 		exit(EXIT_FAILURE);
 	}
 
-	petraReadSocketServer = create_server("192.168.1.11", port+1, &addr_in_r);
+	petraReadSocketServer = create_server(IP, PORT+1, &addr_in_r);
 	if(petraReadSocketServer == -1)
 	{
 		close(petraWriteSocketServer);
@@ -181,6 +190,25 @@ int main(int argc, char const *argv[])
 	return 0;
 }
 
+void interrupt_main(int sig)
+{
+	pthread_kill(sensors_watcher_thread, SIGUSR1);
+	pthread_join(sensors_watcher_thread, NULL);
+
+	pthread_mutex_destroy(&petra_mutex);
+
+	if(petraWriteSocketClient != -1)
+		close(petraWriteSocketClient);
+	if(petraReadSocketClient != -1)
+		close(petraReadSocketClient);
+	if(petraWriteSocketServer != -1)
+   		close(petraWriteSocketServer);
+	if(petraReadSocketServer != -1)
+		close(petraReadSocketServer);
+	log("closed by interrupt");
+	exit(EXIT_SUCCESS);
+}
+
 int accept_client(int socketServer, struct sockaddr_in *addr_in)
 {
 	int socketClient = -1;
@@ -204,7 +232,7 @@ int accept_client(int socketServer, struct sockaddr_in *addr_in)
 	return socketClient;
 }
 
-int create_server(const char *ip, short port, struct sockaddr_in *addr_in)
+int create_server(const char *ip, unsigned short port, struct sockaddr_in *addr_in)
 {
 	int socketServer = -1;
 	struct hostent *infosHost = NULL;
@@ -246,6 +274,9 @@ int create_server(const char *ip, short port, struct sockaddr_in *addr_in)
 void sensors_watcher_interrupt(int sig)
 {
 	log("sensors watcher interrupt");
+	int rc = 0xff;
+	//envoi du signal de fin
+	send(petraReadSocketClient, &rc, sizeof(unsigned char), 0);
 	pthread_exit(NULL);
 }
 
@@ -255,16 +286,18 @@ void *sensors_watcher_handler(void *_)
 
 	struct sigaction interrupt;
 	interrupt.sa_handler = sensors_watcher_interrupt;
-	sigaction(SIGINT, &interrupt, NULL);
+	sigaction(SIGUSR1, &interrupt, NULL);
 
 	while(running)
 	{
+		pthread_mutex_lock(&petra_mutex);
 		read_petra(&petra);
 		if(send(petraReadSocketClient, &petra.sensors.byte, sizeof(unsigned char), 0) == -1)
 		{
 			running = 0;
 			logerr("watcher end");
 		}
+		pthread_mutex_unlock(&petra_mutex);
 	}
 	return NULL;
 }
@@ -273,7 +306,6 @@ void petra_hanler(void)
 {
 	log("Petra handler started");
 
-	PetraDriver petra;
 	petra.actuators.byte = 0x0;
 	petra.sensors.byte = 0x0;
 
@@ -281,9 +313,8 @@ void petra_hanler(void)
 	int auto_commit = 1;
 	PetraActions action = NO_DATA;
 
-	pthread_t sensors_watcher_thread;
-
 	int rc = open_petra(&petra, SENSORS_FILE, ACTUATORS_FILE);
+	//envoi de l'état de l'ouverture du driver
 	send(petraWriteSocketClient, (void *)&rc, sizeof(int), 0);
 	if(!rc)
 	{
@@ -295,6 +326,7 @@ void petra_hanler(void)
 				logerr("recv error");
 				break;
 			}
+			pthread_mutex_lock(&petra_mutex);
 			switch(action)
 			{
 				case ROLLER1:
@@ -336,18 +368,21 @@ void petra_hanler(void)
 				case EXIT:
 					action = NO_PA;
 					running = 0;
+					break;
+				default:
+					log("ignore");
 			}
 			if(action && auto_commit)
 			{
 				write_petra(&petra);
 			}
+			pthread_mutex_unlock(&petra_mutex);
 			action = NO_PA;
 		}
 	}
-	pthread_kill(sensors_watcher_thread, SIGINT);
+	pthread_kill(sensors_watcher_thread, SIGUSR1);
 	pthread_join(sensors_watcher_thread, NULL);
-	rc = 0xff;
-	send(petraReadSocketClient, &rc, sizeof(unsigned char), 0);
+	
 	log("Petra handler stop");
 }
 
